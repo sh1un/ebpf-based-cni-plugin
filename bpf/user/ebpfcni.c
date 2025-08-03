@@ -15,32 +15,11 @@ struct ip_pair
 
 int main(int argc, char *argv[])
 {
-    // Specify the path to the BPF map file, which is typically under /sys/fs/bpf/
-    const char *obj_file = "./ebpfcni.bpf.o";
-
-    // Load the BPF map from the specified file
-    struct bpf_object *obj;
-    struct bpf_map *map;
-
-    obj = bpf_object__open_file(obj_file, NULL);
-    if (!obj)
+    // Load the pinned BPF map from bpffs
+    int map_fd = bpf_obj_get("/sys/fs/bpf/iprules");
+    if (map_fd < 0)
     {
-        fprintf(stderr, "Error opening BPF object file\n");
-        return 1;
-    }
-
-    if (bpf_object__load(obj))
-    {
-        fprintf(stderr, "Error loading BPF object file\n");
-        bpf_object__close(obj);
-        return 1;
-    }
-
-    map = bpf_object__find_map_by_name(obj, "iprules");
-    if (!map)
-    {
-        fprintf(stderr, "Error finding BPF map by name\n");
-        bpf_object__close(obj);
+        perror("Error opening pinned BPF map");
         return 1;
     }
 
@@ -52,18 +31,13 @@ int main(int argc, char *argv[])
     int value = atoi(argv[3]);
 
     // Update the BPF map element
-    int map_fd = bpf_map__fd(map);
     int ret = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
 
     if (ret)
     {
         fprintf(stderr, "Error updating BPF map element: %s\n", strerror(-ret));
-        bpf_object__close(obj);
         return 1;
     }
-
-    // Clean up and close the BPF map and object
-    bpf_object__close(obj);
 
     return 0;
 }
