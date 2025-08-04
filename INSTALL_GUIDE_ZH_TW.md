@@ -1,23 +1,22 @@
-# 安裝指南：在 Kubernetes 上部署基於 TC 的 eBPF CNI 插件
+# 安裝指南：在 Kubernetes 上部署基於 TC 的 eBPF CNI Plugin
 
-本指南將引導您在一個已使用 `kubeadm` 初始化的 Single node Kubernetes Cluster (Ubuntu 22.04 LTS) 上，部署一個客製化的、基於 TC (Traffic Control) 的 eBPF CNI 插件，並啟用 Network Policy 功能。
+本指南將引導您在一個已使用 `kubeadm` 初始化的 Single node Kubernetes Cluster (Ubuntu 22.04 LTS) 上，部署一個客製化的、基於 TC (Traffic Control) 的 eBPF CNI Plugin，並啟用 Network Policy 功能。
 
 ---
 
-## 步驟 1：前置作業 - 安裝依賴與處理頭文件
+## 步驟 1：前置作業 - 安裝必要工具
 
-首先，登入您的 EC2 實例，安裝必要的工具，並解決 eBPF 編譯時的核心頭文件問題。
+首先，登入您的 EC2 實例，安裝必要的工具
 
 > 遇到 debconf 提示時，請選擇 "OK" 繼續安裝
 
 ```bash
-# 更新套件列表
 sudo apt-get update
 
-# 安裝必要的工具鏈和函式庫
+# 安裝必要的工具和函式庫
 sudo apt-get install -y clang llvm libelf-dev libbpf-dev libpcap-dev iproute2 jq bridge-utils wget tar build-essential make
 
-# 安裝與當前 AWS 核心版本匹配的頭文件和工具
+
 sudo apt-get install -y linux-headers-$(uname -r) linux-tools-aws
 
 # 建立符號連結以解決 <asm/types.h> 找不到的問題
@@ -38,14 +37,15 @@ cd ebpf-based-cni-plugin/
 
 ---
 
-## 步驟 3：編譯 eBPF 程式與 user space 工具
+## 步驟 3：編譯 eBPF Program 和 user space 工具
 
-現在，我們需要編譯 eBPF 核心程式，以及用來操作 eBPF map 的 user space 工具。
+這步驟，我們需要編譯待會要 Attch 到 TC 上的 eBPF Program
+還有一個用來操作 eBPF map 的 user space 工具 - iprules，這樣我們就可以透過 `./iprules` 指令與 eBPF map 互動
 
-### 3.1 編譯 eBPF 核心程式
+### 3.1 編譯 eBPF Program
 
 ```bash
-# 編譯 eBPF 核心程式
+# 編譯 eBPF Program
 clang -O2 -g -target bpf -I/usr/include/bpf \
   -c bpf/kernel/ebpfcni.bpf.c \
   -o bpf/kernel/ebpfcni.bpf.o
@@ -71,14 +71,14 @@ sudo chmod +x k8s/controller/iprules
 
 ---
 
-## 步驟 4：部署 CNI 插件
+## 步驟 4：部署 CNI Plugin
 
 將 CNI 相關的檔案複製到 Kubernetes 所需的目錄中。
 
 ### 4.1 Load eBPF 程式
 
 ```bash
-# 建立 BPF 檔案系統的掛載點 (如果不存在)
+# 建立 BPF 檔案系統的掛載點
 sudo mkdir -p /sys/fs/bpf
 
 # use this command if needed
@@ -126,7 +126,7 @@ sudo nohup ./k8s/controller/network_policy_controller.sh > /var/log/np-controlle
 
 ## 步驟 6：驗證 Network Policy 功能
 
-在 Controller 運行後，您的 Network Policy 應該就能生效了。
+在 Controller 運行後，Network Policy 應該就能生效了。
 
 ### 6.1 建立 client & server Pods
 
@@ -169,4 +169,4 @@ kubectl exec client -- curl -s --connect-timeout 5 $SERVER_IP
 
 ```
 
-您應該會看到 Nginx 的歡迎頁面。這證明了從 eBPF 數據平面到 Controller 控制平面的完整流程已成功運作。
+應該會看到 Nginx 的歡迎頁面。
