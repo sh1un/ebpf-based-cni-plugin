@@ -67,7 +67,8 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Iprules *ebpf.MapSpec `ebpf:"iprules"`
+	Iprules  *ebpf.MapSpec `ebpf:"iprules"`
+	LocalCfg *ebpf.MapSpec `ebpf:"local_cfg"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -96,12 +97,14 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Iprules *ebpf.Map `ebpf:"iprules"`
+	Iprules  *ebpf.Map `ebpf:"iprules"`
+	LocalCfg *ebpf.Map `ebpf:"local_cfg"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
 		m.Iprules,
+		m.LocalCfg,
 	)
 }
 
