@@ -1,20 +1,21 @@
-#include <linux/bpf.h>
-#include <linux/in.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/pkt_cls.h>
-#include <bpf_helpers.h>
-#include <bpf_endian.h>
+#include "vmlinux.h"
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_endian.h>
 
+// Manually define constants to avoid header conflicts with vmlinux.h
+#define TC_ACT_OK 0
+#define TC_ACT_SHOT 2
 #define ETH_P_IP 0x0800
-#define MAX_ENTRIES 1000
+
+#define MAX_ENTRIES 1024
 
 struct
 {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, MAX_ENTRIES);
-    __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(__u64));
+    __type(key, __u32);
+    __type(value, __u64);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } counter SEC(".maps");
 
@@ -33,28 +34,30 @@ struct
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } iprules SEC(".maps");
 
-SEC("classifier")
+SEC("tc")
 int process_tc(struct __sk_buff *skb)
 {
     void *data = (void *)(long)skb->data;
     void *data_end = (void *)(long)skb->data_end;
     struct ethhdr *eth = data;
-    if (data + sizeof(struct ethhdr) > data_end)
-        return TC_ACT_SHOT;
-    if (bpf_ntohs(eth->h_proto) != ETH_P_IP)
+    struct iphdr *iph;
+
+    if (data + sizeof(*eth) > data_end)
         return TC_ACT_OK;
 
-    struct iphdr *iph = data + sizeof(struct ethhdr);
-    if (data + sizeof(struct ethhdr) + sizeof(struct iphdr) > data_end)
-        // If not a valid iph, we abort.
-        return TC_ACT_SHOT;
+    if (eth->h_proto != bpf_htons(ETH_P_IP))
+        return TC_ACT_OK;
 
-    bpf_printk("Got TCP packet from %x", bpf_ntohl(iph->saddr));
-    bpf_printk("Got TCP packet to %x", bpf_ntohl(iph->daddr));
+    iph = data + sizeof(*eth);
+    if ((void *)iph + sizeof(*iph) > data_end)
+        return TC_ACT_OK;
+
+    bpf_printk("tc: got packet from %x to %x", bpf_ntohl(iph->saddr), bpf_ntohl(iph->daddr));
 
     __u32 src_ip_key = iph->saddr;
+    __u64 *value;
 
-    __u64 *value = bpf_map_lookup_elem(&counter, &src_ip_key);
+    value = bpf_map_lookup_elem(&counter, &src_ip_key);
     if (value)
     {
         (*value)++;
@@ -71,8 +74,9 @@ int process_tc(struct __sk_buff *skb)
     struct ip_pair ip_pair_key;
     ip_pair_key.saddr = bpf_ntohl(iph->saddr);
     ip_pair_key.daddr = bpf_ntohl(iph->daddr);
+    int *value_ip_pair;
 
-    int *value_ip_pair = bpf_map_lookup_elem(&iprules, &ip_pair_key);
+    value_ip_pair = bpf_map_lookup_elem(&iprules, &ip_pair_key);
     if (value_ip_pair)
     {
         // Rule exists, check if it's an allow (1) or deny (0) rule
