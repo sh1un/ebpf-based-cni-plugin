@@ -5,7 +5,7 @@ set -uo pipefail
 INTERVAL="${INTERVAL:-5}"                         # seconds
 BPF_PIN_PATH="${BPF_PIN_PATH:-/sys/fs/bpf/tc/globals}"
 STATE_DIR="${STATE_DIR:-/var/run/ebpf-agent}"    # stores assigned identities & cached edges
-IDENTITY_MODE="${IDENTITY_MODE:-incremental}"    # incremental | labels
+IDENTITY_MODE="${IDENTITY_MODE:-labels}"    # incremental | labels
 SYMMETRIC_DEFAULT="${SYMMETRIC_DEFAULT:-true}"  # true: also write reverse allow for demo
 
 mkdir -p "${STATE_DIR}/pods" "${STATE_DIR}/policies"
@@ -43,24 +43,26 @@ assign_identity() {
   local uid="$1" labels_json="$2" ns="$3"
   local idfile="${STATE_DIR}/pods/${uid}.id"
 
-  if [[ -f "$idfile" ]]; then
-    cat "$idfile"
-    return 0
-  fi
-
   local id
   if [[ "$IDENTITY_MODE" == "labels" ]]; then
-    # include namespace as a label to avoid collisions across ns
+    # According to labels and namespace to compute identity
     local labels_with_ns
     labels_with_ns="$(jq -c --arg ns "$ns" '. + {"k8s:namespace":$ns}' <<<"$labels_json")"
     id="$(labels_to_u32 <<<"$labels_with_ns")"
+    echo "$id" > "$idfile"   # overwrite each time
   else
+    # incremental mode: only assign once per-uid
+    if [[ -f "$idfile" ]]; then
+      cat "$idfile"
+      return 0
+    fi
     id="$(next_identity)"
+    echo "$id" > "$idfile"
   fi
 
-  echo "$id" > "$idfile"
   echo "$id"
 }
+
 
 # ===== Pod sync → endpoint_map =====
 sync_pods() {
