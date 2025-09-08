@@ -16,7 +16,7 @@ need_bin() {
   command -v "$1" >/dev/null 2>&1 || { echo "FATAL: missing binary: $1"; exit 1; }
 }
 
-for bin in kubectl jq endpointctl policyctl sha1sum; do need_bin "$bin"; done
+for bin in kubectl jq endpointctl policyctl sha1sum bpftool; do need_bin "$bin"; done
 
 # ===== Identity helpers =====
 # Incremental counter persisted to file
@@ -62,6 +62,47 @@ assign_identity() {
 
   echo "$id"
 }
+
+# ===== Identity GC (remove policy edges for identities no longer used) =====
+gc_unused_identities() {
+  # current identities from this sync (prepared by sync_pods via current_file)
+  local current_ids_file="${STATE_DIR}/pods/current_ids.list"
+  local prev_ids_file="${STATE_DIR}/active_identities.list"
+
+  # from current.list (UID:IP:ID), extract ID column, sort & uniq
+  awk -F: '{print $3}' "${STATE_DIR}/pods/current.list" 2>/dev/null \
+    | sort -n | uniq > "$current_ids_file"
+
+  # No previous file? Create empty
+  [[ -f "$prev_ids_file" ]] || : > "$prev_ids_file"
+
+  # Find identities present in previous but not in current (to be GCed)
+  # Note: comm requires both files to be sorted
+  local removed_ids
+  removed_ids=$(comm -23 "$prev_ids_file" "$current_ids_file" || true)
+
+  # For each removed identity, delete all edges in policy_map involving it as src or dst
+  if [[ -n "${removed_ids//[[:space:]]/}" ]]; then
+    while read -r rid; do
+      [[ -n "$rid" ]] || continue
+      # List all (src,dst) pairs involving rid
+      bpftool map dump pinned "${BPF_PIN_PATH}/policy_map" 2>/dev/null \
+      | jq -r --argjson ID "$rid" '
+          .[]? | select((.key.src_id == $ID) or (.key.dst_id == $ID))
+          | "\(.key.src_id)\t\(.key.dst_id)"
+        ' \
+      | while IFS=$'\t' read -r s d; do
+          policyctl deny --src "$s" --dst "$d" >/dev/null 2>&1 || true
+          log "policy GC: removed edge src=$s dst=$d (identity $rid unused)"
+        done
+    done <<< "$removed_ids"
+  fi
+
+  # Overwrite previous identities file for next round
+  sort -n -u "$current_ids_file" -o "$current_ids_file"
+  mv -f "$current_ids_file" "$prev_ids_file" 2>/dev/null || cp "$current_ids_file" "$prev_ids_file"
+}
+
 
 
 # ===== Pod sync → endpoint_map =====
@@ -128,6 +169,9 @@ sync_pods() {
   while IFS=: read -r uid ip id; do
     echo "$ip" > "${STATE_DIR}/pods/${uid}.lastip"
   done < <(cut -d: -f1,2,3 "$current_file")
+
+  # After syncing pods, run identity GC to purge policy edges for identities no longer in use
+  gc_unused_identities
 }
 
 # ===== NetworkPolicy sync → policy_map =====
@@ -194,6 +238,9 @@ sync_policies() {
       local edgef="${STATE_DIR}/policies/${ns}_${name}.edges"
       mv -f "${edgef}.tmp" "$edgef" 2>/dev/null || true
     done
+
+  # Ensure seen list sorted & unique before GC
+  sort -u "$seen" -o "$seen"
 
   # GC: remove edges for NPs that no longer exist
   for f in "${STATE_DIR}/policies/"*.edges; do
