@@ -10,8 +10,14 @@ rm -f cni/plugin/bpf_bpf.go cni/plugin/bpf_bpf.o
 echo "--- Generating eBPF Go bindings ---"
 go generate ./cni/plugin
 
-# Cross-compile the CNI plugin for Linux/ARM64
+# Cross-compile binaries for Linux/ARM64
 echo "--- Building CNI plugin binary ---"
 GOOS=linux GOARCH=arm64 go build -o bin/ebpfcni ./cni/plugin
+
+echo "--- Building endpointctl binary ---"
+GOOS=linux GOARCH=arm64 go build -o bin/endpointctl ./cmd/endpointctl
+
+echo "--- Building policyctl binary ---"
+GOOS=linux GOARCH=arm64 go build -o bin/policyctl ./cmd/policyctl
 
 echo "--- Build complete ---"

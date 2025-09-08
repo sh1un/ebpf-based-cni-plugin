@@ -12,10 +12,10 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type bpfIpRule struct {
+type bpfPolicyKey struct {
 	_     structs.HostLayout
-	SrcIp uint32
-	DstIp uint32
+	SrcId uint32
+	DstId uint32
 }
 
 // loadBpf returns the embedded CollectionSpec for bpf.
@@ -67,8 +67,8 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Iprules  *ebpf.MapSpec `ebpf:"iprules"`
-	LocalCfg *ebpf.MapSpec `ebpf:"local_cfg"`
+	EndpointMap *ebpf.MapSpec `ebpf:"endpoint_map"`
+	PolicyMap   *ebpf.MapSpec `ebpf:"policy_map"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -97,14 +97,14 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Iprules  *ebpf.Map `ebpf:"iprules"`
-	LocalCfg *ebpf.Map `ebpf:"local_cfg"`
+	EndpointMap *ebpf.Map `ebpf:"endpoint_map"`
+	PolicyMap   *ebpf.Map `ebpf:"policy_map"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
-		m.Iprules,
-		m.LocalCfg,
+		m.EndpointMap,
+		m.PolicyMap,
 	)
 }
 

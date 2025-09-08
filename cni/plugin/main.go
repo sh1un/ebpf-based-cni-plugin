@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 
+	_ "github.com/cilium/ebpf"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -18,19 +18,9 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
-
-	"github.com/cilium/ebpf"
 )
 
-// K8sArgs contains CNI arguments passed by the kubelet.
-type K8sArgs struct {
-	types.CommonArgs
-	K8S_POD_NAME      types.UnmarshallableString
-	K8S_POD_NAMESPACE types.UnmarshallableString
-	K8S_POD_UID       types.UnmarshallableString
-}
-
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -target bpf bpf ../../bpf/kernel/ebpfcni.bpf.c -- -I../../headers
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc /opt/homebrew/opt/llvm/bin/clang -target bpf bpf ../../bpf/kernel/ebpfcni.bpf.c -- -I../../headers -I../../bpf/libbpf_headers -I../../bpf/include
 
 const (
 	// Use a global path for maps, similar to Cilium, to decouple map lifecycle from pod lifecycle.
@@ -48,20 +38,6 @@ type CacheData struct {
 type NetConf struct {
 	types.NetConf
 	Bridge string `json:"bridge"`
-}
-
-// getK8sPodUID extracts the Pod UID from the CNI arguments.
-func getK8sPodUID(args *skel.CmdArgs) (string, error) {
-	k8sArgs := K8sArgs{}
-	if err := types.LoadArgs(args.Args, &k8sArgs); err != nil {
-		return "", fmt.Errorf("failed to load CNI k8s args: %v", err)
-	}
-
-	podUID := string(k8sArgs.K8S_POD_UID)
-	if podUID == "" {
-		return "", fmt.Errorf("K8S_POD_UID is missing from CNI arguments")
-	}
-	return podUID, nil
 }
 
 func init() {
@@ -191,12 +167,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// --- 0. Generate unique names and paths ---
-	// Use ContainerID for temporary resources like veth and cache.
 	if args.ContainerID == "" {
 		return fmt.Errorf("ContainerID is missing from CNI arguments")
 	}
 	logrus.Infof("Received CNI ADD request for ContainerID: %s", args.ContainerID)
-	// Use a short version of the ContainerID to create a unique host-side veth name.
 	if len(args.ContainerID) < 8 {
 		return fmt.Errorf("container ID %s is too short", args.ContainerID)
 	}
@@ -204,28 +178,18 @@ func cmdAdd(args *skel.CmdArgs) error {
 	containerCacheDir := filepath.Join(cacheDir, args.ContainerID)
 	cacheFilePath := filepath.Join(containerCacheDir, "cni_cache.json")
 
-	// Use PodUID for persistent resources like BPF maps.
-	podUID, err := getK8sPodUID(args)
-	if err != nil {
-		return err
-	}
-	logrus.Infof("Using PodUID %s for BPF map pinning", podUID)
-
 	// --- 1. Network Setup ---
-	// Create or get the bridge
 	br, err := setupBridge(n)
 	if err != nil {
 		return fmt.Errorf("failed to set up bridge: %v", err)
 	}
 
-	// Get network namespace
 	netns, err := ns.GetNS(args.Netns)
 	if err != nil {
 		return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
 	}
 	defer netns.Close()
 
-	// Clean up old veth link if it exists to ensure a clean state.
 	if oldLink, err := netlink.LinkByName(hostVethName); err == nil {
 		if err := netlink.LinkDel(oldLink); err != nil {
 			return fmt.Errorf("failed to delete old veth %s: %v", hostVethName, err)
@@ -233,19 +197,16 @@ func cmdAdd(args *skel.CmdArgs) error {
 		logrus.Infof("Deleted old veth link %s", hostVethName)
 	}
 
-	// Create and configure the veth pair
 	hostIface, contIface, err := setupVeth(netns, br, args.IfName, hostVethName)
 	if err != nil {
 		return fmt.Errorf("failed to set up veth pair: %v", err)
 	}
 
 	// --- 2. IPAM ---
-	// Run the IPAM plugin
 	r, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
 	if err != nil {
 		return fmt.Errorf("failed to run IPAM plugin: %v", err)
 	}
-	// Convert the IPAM result to the current CNI version
 	result, err := current.NewResultFromResult(r)
 	if err != nil {
 		return fmt.Errorf("failed to convert IPAM result: %v", err)
@@ -254,25 +215,17 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("IPAM plugin returned no IP addresses")
 	}
 
-	// Configure the container interface with the IP address from IPAM
 	err = netns.Do(func(_ ns.NetNS) error {
 		iface, err := netlink.LinkByName(args.IfName)
 		if err != nil {
 			return fmt.Errorf("failed to find interface %s in container netns: %v", args.IfName, err)
 		}
-
-		// Add the IP address to the interface
 		addr := &netlink.Addr{IPNet: &result.IPs[0].Address}
 		if err := netlink.AddrAdd(iface, addr); err != nil {
 			return fmt.Errorf("failed to add IP address %s to interface %s: %v", result.IPs[0].Address.String(), args.IfName, err)
 		}
-
-		// Add the default route
 		gw := result.IPs[0].Gateway
-		route := &netlink.Route{
-			Dst: nil, // Default route
-			Gw:  gw,
-		}
+		route := &netlink.Route{Dst: nil, Gw: gw}
 		if err := netlink.RouteAdd(route); err != nil {
 			return fmt.Errorf("failed to add default route via %s: %v", gw.String(), err)
 		}
@@ -283,123 +236,48 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// --- 3. eBPF Setup ---
-	// The pin path is now global, not tied to a pod-specific directory.
 	if err := os.MkdirAll(bpfPinPath, 0755); err != nil {
 		return fmt.Errorf("failed to create global pin directory %s: %v", bpfPinPath, err)
 	}
-	// The map is pinned with a name unique to the Pod UID.
-	iprulesMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
-	localCfgMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("local_cfg_%s", podUID))
-	// The program can be pinned with a unique name as well.
-	progPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("tc_prog_%s", podUID))
 
 	var objs bpfObjects
-	opts := ebpf.CollectionOptions{
-		MapReplacements: make(map[string]*ebpf.Map),
-	}
-	defer func() {
-		// Clean up maps that were successfully replaced, as they won't be closed by objs.Close()
-		if m, ok := opts.MapReplacements["iprules"]; ok {
-			m.Close()
-		}
-		if m, ok := opts.MapReplacements["local_cfg"]; ok {
-			m.Close()
-		}
-	}()
-
-	// Try to load a reusable iprules map.
-	if m, err := ebpf.LoadPinnedMap(iprulesMapPinPath, nil); err == nil {
-		logrus.Infof("Found existing pinned iprules map at %s, reusing it.", iprulesMapPinPath)
-		opts.MapReplacements["iprules"] = m
-	}
-
-	// Try to load a reusable local_cfg map.
-	if m, err := ebpf.LoadPinnedMap(localCfgMapPinPath, nil); err == nil {
-		logrus.Infof("Found existing pinned local_cfg map at %s, reusing it.", localCfgMapPinPath)
-		opts.MapReplacements["local_cfg"] = m
-	}
-
-	// Load the BPF objects, with replacement if applicable.
-	if err := loadBpfObjects(&objs, &opts); err != nil {
+	if err := loadBpfObjects(&objs, nil); err != nil {
 		return fmt.Errorf("failed to load bpf objects: %v", err)
 	}
 	defer objs.Close()
 
-	// If we didn't reuse the iprules map, we need to pin the new one.
-	if _, ok := opts.MapReplacements["iprules"]; !ok {
-		logrus.Infof("No existing iprules map found, creating and pinning a new one at %s.", iprulesMapPinPath)
-		if err := ensurePinnedMap(objs.Iprules, iprulesMapPinPath); err != nil {
-			return err
-		}
+	// Pin maps and program idempotently.
+	endpointMapPinPath := filepath.Join(bpfPinPath, "endpoint_map")
+	if err := pinObject(objs.EndpointMap, endpointMapPinPath); err != nil {
+		return fmt.Errorf("failed to pin endpoint_map: %v", err)
+	}
+	policyMapPinPath := filepath.Join(bpfPinPath, "policy_map")
+	if err := pinObject(objs.PolicyMap, policyMapPinPath); err != nil {
+		return fmt.Errorf("failed to pin policy_map: %v", err)
+	}
+	progPinPath := filepath.Join(bpfPinPath, "tc_prog")
+	if err := pinObject(objs.ProcessTc, progPinPath); err != nil {
+		return fmt.Errorf("failed to pin tc_prog: %v", err)
 	}
 
-	// If we didn't reuse the local_cfg map, we need to pin the new one.
-	if _, ok := opts.MapReplacements["local_cfg"]; !ok {
-		logrus.Infof("No existing local_cfg map found, creating and pinning a new one at %s.", localCfgMapPinPath)
-		if err := ensurePinnedMap(objs.LocalCfg, localCfgMapPinPath); err != nil {
-			return err
-		}
-	}
-
-	// Pin the program.
-	if err := ensurePinnedProgram(objs.ProcessTc, progPinPath); err != nil {
-		return err
-	}
-
-	// --- 3.1. Configure Local Pod IP in BPF Map ---
-	// After loading the BPF objects, we configure the local_cfg map with the Pod's IP.
-	// This allows the BPF program to identify which traffic is destined for itself.
-	key := uint32(0)
-	// The IP from IPAM is already in a net.IPNet, which contains the IP in network byte order.
-	// We need to convert it to a uint32 in host byte order.
-	ip := result.IPs[0].Address.IP.To4()
-	if ip == nil {
-		return fmt.Errorf("failed to parse IPv4 address from IPAM result")
-	}
-	// Convert the 4-byte IP representation to a uint32.
-	// The IP from net.IP.To4() is in network order (big-endian). We need to store it
-	// in the map in host byte order to match the eBPF program's expectation.
-	// The IP from net.IP.To4() is in network byte order (big-endian).
-	// We need to convert it to a uint32. The BPF program expects this
-	// value to be in host byte order for its comparisons.
-	// binary.BigEndian.Uint32 correctly reads the big-endian byte slice
-	// into a uint32, which will be correctly interpreted as a host-order
-	// value by the BPF program, regardless of the host's actual endianness.
-	localIP := binary.BigEndian.Uint32(ip)
-
-	logrus.Infof("DEBUG_CNI: Writing to local_cfg map. ContainerID: %s, PodUID: %s, IP: %s, IP(hex): %x, MapPinPath: %s",
-		args.ContainerID, podUID, ip.String(), localIP, localCfgMapPinPath)
-
-	if err := objs.LocalCfg.Put(&key, &localIP); err != nil {
-		return fmt.Errorf("failed to update local_cfg map with local IP: %v", err)
-	}
-	logrus.Infof("Successfully configured local Pod IP %s in local_cfg map", ip.String())
-
-	// Find the host-side veth interface to attach the eBPF program
 	hostVeth, err := netlink.LinkByName(hostIface.Name)
 	if err != nil {
 		return fmt.Errorf("failed to find host veth %s: %v", hostIface.Name, err)
 	}
 
-	// Ensure the clsact qdisc is present.
 	cmd := exec.Command("tc", "qdisc", "add", "dev", hostVeth.Attrs().Name, "clsact")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// Ignore "File exists" error, which is expected if the qdisc is already there.
 		if !strings.Contains(string(output), "File exists") {
 			return fmt.Errorf("failed to add clsact qdisc: %v, output: %s", err, string(output))
 		}
 	}
 
-	// Attach the eBPF program to the ingress hook (from-pod traffic).
-	// Use "replace" to make the operation idempotent.
 	cmd = exec.Command("tc", "filter", "replace", "dev", hostVeth.Attrs().Name, "ingress", "bpf", "da", "pinned", progPinPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to attach program to ingress: %v, output: %s", err, string(output))
 	}
 	logrus.Infof("Successfully attached eBPF program to ingress on iface %s", hostVeth.Attrs().Name)
 
-	// Attach the same eBPF program to the egress hook (to-pod traffic).
-	// This is the key for ingress policy and default deny.
 	cmd = exec.Command("tc", "filter", "replace", "dev", hostVeth.Attrs().Name, "egress", "bpf", "da", "pinned", progPinPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to attach program to egress: %v, output: %s", err, string(output))
@@ -427,7 +305,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 }
 
 func cmdDel(args *skel.CmdArgs) error {
-	// --- 1. Release IP using IPAM ---
 	n := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, n); err == nil {
 		if err := ipam.ExecDel(n.IPAM.Type, args.StdinData); err != nil {
@@ -442,11 +319,9 @@ func cmdDel(args *skel.CmdArgs) error {
 		return nil
 	}
 
-	// --- 2. Clean up network resources using cache ---
 	containerCacheDir := filepath.Join(cacheDir, args.ContainerID)
 	cacheFilePath := filepath.Join(containerCacheDir, "cni_cache.json")
 
-	// Read cache data
 	cacheFile, err := os.Open(cacheFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -454,7 +329,6 @@ func cmdDel(args *skel.CmdArgs) error {
 			return nil
 		}
 		logrus.Warnf("failed to open cache file %s: %v", cacheFilePath, err)
-		// Continue to try cleanup anyway
 	}
 
 	var hostVethName string
@@ -468,7 +342,6 @@ func cmdDel(args *skel.CmdArgs) error {
 		cacheFile.Close()
 	}
 
-	// If we have a host veth name, delete the link
 	if hostVethName != "" {
 		iface, err := netlink.LinkByName(hostVethName)
 		if err != nil {
@@ -486,30 +359,8 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 	}
 
-	// --- 3. Clean up BPF resources ---
-	// Use PodUID to find and remove the BPF map and program.
-	podUID, err := getK8sPodUID(args)
-	if err != nil {
-		// If we can't get the PodUID, we can't clean up the BPF resources.
-		// Log the warning but don't fail the DEL operation.
-		logrus.Warnf("Could not get PodUID on DEL, skipping BPF cleanup: %v", err)
-	} else {
-		logrus.Infof("Cleaning up BPF resources for PodUID %s", podUID)
-		iprulesMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
-		if err := os.Remove(iprulesMapPinPath); err != nil && !os.IsNotExist(err) {
-			logrus.Warnf("failed to remove BPF iprules map pin %s: %v", iprulesMapPinPath, err)
-		}
-		localCfgMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("local_cfg_%s", podUID))
-		if err := os.Remove(localCfgMapPinPath); err != nil && !os.IsNotExist(err) {
-			logrus.Warnf("failed to remove BPF local_cfg map pin %s: %v", localCfgMapPinPath, err)
-		}
-		progPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("tc_prog_%s", podUID))
-		if err := os.Remove(progPinPath); err != nil && !os.IsNotExist(err) {
-			logrus.Warnf("failed to remove BPF prog pin %s: %v", progPinPath, err)
-		}
-	}
+	// BPF resources are global and are not cleaned up on pod deletion.
 
-	// --- 4. Clean up Cache directory ---
 	if err := os.RemoveAll(containerCacheDir); err != nil {
 		logrus.Warnf("failed to remove cache directory %s: %v", containerCacheDir, err)
 	}
@@ -517,47 +368,30 @@ func cmdDel(args *skel.CmdArgs) error {
 	return nil
 }
 
-// ensurePinnedMap pins a map and verifies it really exists on bpffs.
-// This prevents false positives where Pin() logs success but no file is created.
-func ensurePinnedMap(m *ebpf.Map, path string) error {
-	if err := m.Pin(path); err != nil {
-		return fmt.Errorf("failed to pin map at %s: %v", path, err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		// If stat fails, try to clean up the pin.
-		_ = m.Unpin()
-		return fmt.Errorf("map not actually pinned at %s: %v", path, err)
-	}
-	logrus.Infof("Verified pinned map exists at %s", path)
-	return nil
+// pinner is an interface for objects that can be pinned to the BPF filesystem.
+type pinner interface {
+	Pin(string) error
 }
 
-// ensurePinnedProgram pins a program and verifies it really exists on bpffs.
-func ensurePinnedProgram(p *ebpf.Program, path string) error {
+// pinObject checks if a pin exists, and if not, pins the object.
+func pinObject(p pinner, path string) error {
+	if _, err := os.Stat(path); err == nil {
+		logrus.Infof("BPF object already pinned at %s, skipping.", path)
+		return nil
+	}
 	if err := p.Pin(path); err != nil {
-		return fmt.Errorf("failed to pin program at %s: %v", path, err)
+		return fmt.Errorf("failed to pin object at %s: %w", path, err)
 	}
-	if _, err := os.Stat(path); err != nil {
-		// If stat fails, try to clean up the pin.
-		_ = p.Unpin()
-		return fmt.Errorf("program not actually pinned at %s: %v", path, err)
-	}
-	logrus.Infof("Verified pinned program exists at %s", path)
+	logrus.Infof("Successfully pinned BPF object at %s", path)
 	return nil
 }
 
 func cmdCheck(args *skel.CmdArgs) error {
 	// TODO: Implement health check logic
-	// 1. Check if the bridge exists and is up.
-	// 2. Check if the veth pair exists.
-	// 3. Check if the container interface has the expected IP.
-	// 4. Check if the eBPF program is attached.
-	// 5. Check if the BPF map is pinned.
 	return nil
 }
 
 func main() {
-	// Set up logging
 	f, err := os.OpenFile("/tmp/ebpfcni.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		logrus.SetOutput(f)
