@@ -288,34 +288,55 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to create global pin directory %s: %v", bpfPinPath, err)
 	}
 	// The map is pinned with a name unique to the Pod UID.
-	mapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
+	iprulesMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
+	localCfgMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("local_cfg_%s", podUID))
 	// The program can be pinned with a unique name as well.
 	progPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("tc_prog_%s", podUID))
 
 	var objs bpfObjects
-	opts := ebpf.CollectionOptions{}
+	opts := ebpf.CollectionOptions{
+		MapReplacements: make(map[string]*ebpf.Map),
+	}
+	defer func() {
+		// Clean up maps that were successfully replaced, as they won't be closed by objs.Close()
+		if m, ok := opts.MapReplacements["iprules"]; ok {
+			m.Close()
+		}
+		if m, ok := opts.MapReplacements["local_cfg"]; ok {
+			m.Close()
+		}
+	}()
 
-	// Try to load a reusable map.
-	if m, err := ebpf.LoadPinnedMap(mapPinPath, nil); err == nil {
-		logrus.Infof("Found existing pinned map at %s, reusing it.", mapPinPath)
-		// If we find a map, we set up the collection options to use it.
-		opts.MapReplacements = map[string]*ebpf.Map{"iprules": m}
+	// Try to load a reusable iprules map.
+	if m, err := ebpf.LoadPinnedMap(iprulesMapPinPath, nil); err == nil {
+		logrus.Infof("Found existing pinned iprules map at %s, reusing it.", iprulesMapPinPath)
+		opts.MapReplacements["iprules"] = m
+	}
+
+	// Try to load a reusable local_cfg map.
+	if m, err := ebpf.LoadPinnedMap(localCfgMapPinPath, nil); err == nil {
+		logrus.Infof("Found existing pinned local_cfg map at %s, reusing it.", localCfgMapPinPath)
+		opts.MapReplacements["local_cfg"] = m
 	}
 
 	// Load the BPF objects, with replacement if applicable.
 	if err := loadBpfObjects(&objs, &opts); err != nil {
-		// If the map was replaced, we need to close it manually on error.
-		if opts.MapReplacements != nil {
-			opts.MapReplacements["iprules"].Close()
-		}
 		return fmt.Errorf("failed to load bpf objects: %v", err)
 	}
 	defer objs.Close()
 
-	// If we didn't reuse a map, we need to pin the new one.
-	if opts.MapReplacements == nil {
-		logrus.Infof("No existing map found at %s, creating and pinning a new one.", mapPinPath)
-		if err := ensurePinnedMap(objs.Iprules, mapPinPath); err != nil {
+	// If we didn't reuse the iprules map, we need to pin the new one.
+	if _, ok := opts.MapReplacements["iprules"]; !ok {
+		logrus.Infof("No existing iprules map found, creating and pinning a new one at %s.", iprulesMapPinPath)
+		if err := ensurePinnedMap(objs.Iprules, iprulesMapPinPath); err != nil {
+			return err
+		}
+	}
+
+	// If we didn't reuse the local_cfg map, we need to pin the new one.
+	if _, ok := opts.MapReplacements["local_cfg"]; !ok {
+		logrus.Infof("No existing local_cfg map found, creating and pinning a new one at %s.", localCfgMapPinPath)
+		if err := ensurePinnedMap(objs.LocalCfg, localCfgMapPinPath); err != nil {
 			return err
 		}
 	}
@@ -336,10 +357,18 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to parse IPv4 address from IPAM result")
 	}
 	// Convert the 4-byte IP representation to a uint32.
-	// Note: The byte order of the IP from net.IP.To4() is network order (big-endian).
-	// We need to convert it to host order (little-endian on x86) to match the logic in the BPF program.
-	// A simple way to do this is to read it as a big-endian uint32.
+	// The IP from net.IP.To4() is in network order (big-endian). We need to store it
+	// in the map in host byte order to match the eBPF program's expectation.
+	// The IP from net.IP.To4() is in network byte order (big-endian).
+	// We need to convert it to a uint32. The BPF program expects this
+	// value to be in host byte order for its comparisons.
+	// binary.BigEndian.Uint32 correctly reads the big-endian byte slice
+	// into a uint32, which will be correctly interpreted as a host-order
+	// value by the BPF program, regardless of the host's actual endianness.
 	localIP := binary.BigEndian.Uint32(ip)
+
+	logrus.Infof("DEBUG_CNI: Writing to local_cfg map. ContainerID: %s, PodUID: %s, IP: %s, IP(hex): %x, MapPinPath: %s",
+		args.ContainerID, podUID, ip.String(), localIP, localCfgMapPinPath)
 
 	if err := objs.LocalCfg.Put(&key, &localIP); err != nil {
 		return fmt.Errorf("failed to update local_cfg map with local IP: %v", err)
@@ -352,7 +381,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to find host veth %s: %v", hostIface.Name, err)
 	}
 
-	// Ensure the clsact qdisc is present using the tc command.
+	// Ensure the clsact qdisc is present.
 	cmd := exec.Command("tc", "qdisc", "add", "dev", hostVeth.Attrs().Name, "clsact")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Ignore "File exists" error, which is expected if the qdisc is already there.
@@ -361,12 +390,21 @@ func cmdAdd(args *skel.CmdArgs) error {
 		}
 	}
 
-	// Attach the eBPF program using the tc command with the pinned program path.
-	cmd = exec.Command("tc", "filter", "add", "dev", hostVeth.Attrs().Name, "ingress", "bpf", "da", "pinned", progPinPath)
+	// Attach the eBPF program to the ingress hook (from-pod traffic).
+	// Use "replace" to make the operation idempotent.
+	cmd = exec.Command("tc", "filter", "replace", "dev", hostVeth.Attrs().Name, "ingress", "bpf", "da", "pinned", progPinPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to attach program using tc command: %v, output: %s", err, string(output))
+		return fmt.Errorf("failed to attach program to ingress: %v, output: %s", err, string(output))
 	}
-	logrus.Infof("Successfully attached eBPF program from pinned path %s to iface %s", progPinPath, hostVeth.Attrs().Name)
+	logrus.Infof("Successfully attached eBPF program to ingress on iface %s", hostVeth.Attrs().Name)
+
+	// Attach the same eBPF program to the egress hook (to-pod traffic).
+	// This is the key for ingress policy and default deny.
+	cmd = exec.Command("tc", "filter", "replace", "dev", hostVeth.Attrs().Name, "egress", "bpf", "da", "pinned", progPinPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to attach program to egress: %v, output: %s", err, string(output))
+	}
+	logrus.Infof("Successfully attached eBPF program to egress on iface %s", hostVeth.Attrs().Name)
 
 	// --- 4. Create Cache ---
 	if err := os.MkdirAll(containerCacheDir, 0755); err != nil {
@@ -457,9 +495,13 @@ func cmdDel(args *skel.CmdArgs) error {
 		logrus.Warnf("Could not get PodUID on DEL, skipping BPF cleanup: %v", err)
 	} else {
 		logrus.Infof("Cleaning up BPF resources for PodUID %s", podUID)
-		mapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
-		if err := os.Remove(mapPinPath); err != nil && !os.IsNotExist(err) {
-			logrus.Warnf("failed to remove BPF map pin %s: %v", mapPinPath, err)
+		iprulesMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("iprules_%s", podUID))
+		if err := os.Remove(iprulesMapPinPath); err != nil && !os.IsNotExist(err) {
+			logrus.Warnf("failed to remove BPF iprules map pin %s: %v", iprulesMapPinPath, err)
+		}
+		localCfgMapPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("local_cfg_%s", podUID))
+		if err := os.Remove(localCfgMapPinPath); err != nil && !os.IsNotExist(err) {
+			logrus.Warnf("failed to remove BPF local_cfg map pin %s: %v", localCfgMapPinPath, err)
 		}
 		progPinPath := filepath.Join(bpfPinPath, fmt.Sprintf("tc_prog_%s", podUID))
 		if err := os.Remove(progPinPath); err != nil && !os.IsNotExist(err) {

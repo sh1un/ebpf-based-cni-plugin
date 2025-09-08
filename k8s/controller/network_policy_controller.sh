@@ -24,15 +24,11 @@ ERR_LOG="/tmp/network_policy_controller.err.log"
 # Function to convert IP address to a hex representation suitable for bpftool
 ip_to_hex() {
     ip=$1
-    # 轉成 32-bit 整數
+    # To store a value in host order on a little-endian machine, the bytes
+    # for bpftool must be provided in little-endian order.
+    # For an IP A.B.C.D, this means the hex bytes should be D C B A.
     IFS=. read -r i1 i2 i3 i4 <<< "$ip"
-    ip_int=$(( (i1 << 24) | (i2 << 16) | (i3 << 8) | i4 ))
-    # 按照小端序列印 (host order)
-    printf "%02x %02x %02x %02x" \
-        $((ip_int & 0xff)) \
-        $(((ip_int >> 8) & 0xff)) \
-        $(((ip_int >> 16) & 0xff)) \
-        $(((ip_int >> 24) & 0xff))
+    printf "%02x %02x %02x %02x" "$i4" "$i3" "$i2" "$i1"
 }
 
 # Function to update a BPF map for a specific pod

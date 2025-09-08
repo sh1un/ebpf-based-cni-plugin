@@ -5,6 +5,8 @@ set -e
 export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 
 # Regenerate eBPF Go bindings
+echo "--- Cleaning up old eBPF artifacts ---"
+rm -f cni/plugin/bpf_bpf.go cni/plugin/bpf_bpf.o
 echo "--- Generating eBPF Go bindings ---"
 go generate ./cni/plugin
 

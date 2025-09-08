@@ -30,6 +30,7 @@ struct
 SEC("tc")
 int process_tc(struct __sk_buff *skb)
 {
+    bpf_printk("TC PROG HIT: ifindex=%d\n", skb->ifindex);
     void *data_end = (void *)(long)skb->data_end;
     void *data = (void *)(long)skb->data;
     struct ethhdr *eth = data;
@@ -60,40 +61,53 @@ int process_tc(struct __sk_buff *skb)
         return TC_ACT_OK;
     }
 
-    // The IP addresses in the packet are in network byte order (big-endian).
-    // The local_ip from the map is in host byte order (little-endian on x86).
-    // We must convert the packet's destination IP to host byte order for a correct comparison.
-    if (bpf_ntohl(iph->daddr) != *local_ip)
+    // --- Host-Order IP Conversion & Comparison ---
+    // Convention: All comparisons are done in host byte order.
+    __u32 pkt_saddr_host = bpf_ntohl(iph->saddr);
+    __u32 pkt_daddr_host = bpf_ntohl(iph->daddr);
+    __u32 local_ip_host = *local_ip;
+
+    bpf_printk("CHECK local match: pkt_daddr_host=%x local_ip_host=%x (host order)\n", pkt_daddr_host, local_ip_host);
+    if (pkt_daddr_host != local_ip_host)
     {
         // Not our packet, let it pass.
+        bpf_printk("NOT local pod, allow. pkt_daddr_host=%x, local_ip_host=%x\n", pkt_daddr_host, local_ip_host);
         return TC_ACT_OK;
     }
 
-    // Key is in network byte order, directly from the packet
+    bpf_printk("LOCAL pod traffic, check iprules...\n");
+
+    // --- Policy Lookup ---
+    // Key is constructed in host byte order.
     struct ip_rule rule = {
-        .src_ip = iph->saddr,
-        .dst_ip = iph->daddr,
+        .src_ip = pkt_saddr_host,
+        .dst_ip = pkt_daddr_host,
     };
 
-    bpf_printk("LOOKUP ifindex=%d src=%x dst=%x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
+    bpf_printk("LOOKUP (host order) ifindex=%d src=%x dst=%x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
 
     __u32 *action;
     action = bpf_map_lookup_elem(&iprules, &rule);
     if (action)
     {
+        bpf_printk("DEBUG: Found rule in iprules map with value: %d\n", *action);
         if (*action == 1)
         { // 1 = allow
-            bpf_printk("ALLOW ifindex=%d %x -> %x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
+            bpf_printk("ALLOW (host order) ifindex=%d %x -> %x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
             return TC_ACT_OK;
         }
         else
         { // 0 = deny
-            bpf_printk("DENY ifindex=%d %x -> %x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
+            bpf_printk("DENY (host order) ifindex=%d %x -> %x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
             return TC_ACT_SHOT;
         }
     }
+    else
+    {
+        bpf_printk("NO rule, DEFAULT DENY (host order) %x -> %x\n", rule.src_ip, rule.dst_ip);
+        return TC_ACT_SHOT;
+    }
 
-    // Default deny
-    bpf_printk("DENY (default) ifindex=%d %x -> %x\n", skb->ifindex, rule.src_ip, rule.dst_ip);
+    // Fallback deny, should not be reached.
     return TC_ACT_SHOT;
 }
