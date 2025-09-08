@@ -12,7 +12,7 @@ The current implementation consists of three main components:
 
 *   **CNI Plugin (`cni/ebpfcni`)**: A `bash` script responsible for network setup (veth pair, Linux bridge) and attaching a pre-compiled eBPF program using `tc`. It performs rudimentary, non-robust IPAM.
 *   **eBPF Program (`bpf/kernel/ebpfcni.bpf.c`)**: A `tc` classifier program that implements a default-deny network policy. It uses a pinned BPF map (`iprules`) to check for allowed traffic between source and destination IPs.
-*   **Controller (`k8s/controller/network_policy_controller.sh`)**: A `bash` script (inferred) that watches Kubernetes `NetworkPolicy` resources and updates the `iprules` BPF map accordingly.
+*   **Agent (`k8s/controller/network_policy_agent.sh`)**: A `bash` script (inferred) that watches Kubernetes `NetworkPolicy` resources and updates the `iprules` BPF map accordingly.
 
 ## 3. Proposed Refactoring Plan
 
@@ -54,9 +54,9 @@ This phase focuses on replacing the `cni/ebpfcni` bash script with a self-contai
 6.  **Manage eBPF Objects in Go**:
     *   In `cmdAdd`, use the generated Go code from `bpf2go` to load, attach, and pin the eBPF program and maps.
 
-### Phase 2: Refactor Network Policy Controller to Golang (Future Work)
+### Phase 2: Refactor Network Policy Agent to Golang (Future Work)
 
-This phase will replace the `network_policy_controller.sh` script with a more robust Go-based controller.
+This phase will replace the `network_policy_agent.sh` script with a more robust Go-based agent.
 
 ## 4. Expected Outcome
 
