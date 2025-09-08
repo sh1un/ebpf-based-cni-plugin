@@ -107,7 +107,7 @@ gc_unused_identities() {
 
 # ===== Pod sync → endpoint_map =====
 sync_pods() {
-  log "syncing pods..."
+  log "SYNCING PODS..."
   # Build current set snapshot
   local current_file="${STATE_DIR}/pods/current.list"
   : > "$current_file"
@@ -180,7 +180,7 @@ sync_pods() {
 np_key() { echo "$1:$2"; }  # ns:name
 
 sync_policies() {
-  log "syncing networkpolicies..."
+  log "SYNCING NETWORKPOLICIES..."
   # Track all seen NPs this round for GC
   local seen="${STATE_DIR}/policies/seen.list"
   : > "$seen"
