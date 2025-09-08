@@ -71,13 +71,15 @@ gc_unused_identities() {
 
   # from current.list (UID:IP:ID), extract ID column, sort & uniq
   awk -F: '{print $3}' "${STATE_DIR}/pods/current.list" 2>/dev/null \
-    | sort -n | uniq > "$current_ids_file"
+    | sort -n -u > "$current_ids_file"
 
   # No previous file? Create empty
   [[ -f "$prev_ids_file" ]] || : > "$prev_ids_file"
 
+  # Make sure both files are sorted
+  sort -n -u "$prev_ids_file" -o "$prev_ids_file"
+
   # Find identities present in previous but not in current (to be GCed)
-  # Note: comm requires both files to be sorted
   local removed_ids
   removed_ids=$(comm -23 "$prev_ids_file" "$current_ids_file" || true)
 
@@ -85,7 +87,6 @@ gc_unused_identities() {
   if [[ -n "${removed_ids//[[:space:]]/}" ]]; then
     while read -r rid; do
       [[ -n "$rid" ]] || continue
-      # List all (src,dst) pairs involving rid
       bpftool map dump pinned "${BPF_PIN_PATH}/policy_map" 2>/dev/null \
       | jq -r --argjson ID "$rid" '
           .[]? | select((.key.src_id == $ID) or (.key.dst_id == $ID))
@@ -98,10 +99,10 @@ gc_unused_identities() {
     done <<< "$removed_ids"
   fi
 
-  # Overwrite previous identities file for next round
-  sort -n -u "$current_ids_file" -o "$current_ids_file"
+  # Save current IDs as next round's prev
   mv -f "$current_ids_file" "$prev_ids_file" 2>/dev/null || cp "$current_ids_file" "$prev_ids_file"
 }
+
 
 
 
@@ -169,9 +170,6 @@ sync_pods() {
   while IFS=: read -r uid ip id; do
     echo "$ip" > "${STATE_DIR}/pods/${uid}.lastip"
   done < <(cut -d: -f1,2,3 "$current_file")
-
-  # After syncing pods, run identity GC to purge policy edges for identities no longer in use
-  gc_unused_identities
 }
 
 # ===== NetworkPolicy sync → policy_map =====
@@ -265,5 +263,6 @@ log "starting ebpf-agent (shell) interval=${INTERVAL}s mode=${IDENTITY_MODE} sym
 while true; do
   sync_pods
   sync_policies
+  gc_unused_identities
   sleep "${INTERVAL}"
 done
