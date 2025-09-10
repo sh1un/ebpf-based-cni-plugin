@@ -1,15 +1,15 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-client-to-server
+  name: allow-frontend-to-backend
 spec:
   podSelector:
     matchLabels:
-      app: server
+      app: backend
   policyTypes:
-  - Ingress
+    - Ingress
   ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          app: client
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
