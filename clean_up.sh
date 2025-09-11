@@ -14,7 +14,7 @@ pkill -f ebpf-agent.sh || echo "Agent not running."
 # 2. Delete Kubernetes resources
 echo "[2/5] Deleting Kubernetes resources..."
 # Delete all resources from the manifests directory, ignoring errors if they don't exist.
-kubectl delete -f k8s/manifests/policy-allow-client.yaml --ignore-not-found=true
+kubectl delete -f k8s/manifests/policy-allow-ingress-from-frontend.yaml --ignore-not-found=true
 kubectl delete -f k8s/manifests/policy-deny-all.yaml --ignore-not-found=true
 kubectl delete -f k8s/manifests/test-pods.yaml --ignore-not-found=true
 
