@@ -1,9 +1,14 @@
+#產生 vmlinux.h 的指令：
+sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > headers/vmlinux.h
+
+
 
 # 編譯 eBPF 程式
-clang -O2 -g -target bpf -I/usr/include/bpf \
-  -c bpf/kernel/ebpfcni.bpf.c \
-  -o bpf/kernel/ebpfcni.bpf.o
+clang -O2 -g -target bpf -Iheaders -c bpf/kernel/ebpfcni.bpf.c  -o bpf/kernel/ebpfcni.bpf.o
 
+# Load eBPF 程式
+sudo rm /sys/fs/bpf/ebpfcni
+sudo bpftool prog load bpf/kernel/ebpfcni.bpf.o /sys/fs/bpf/ebpfcni
 
 # 編譯 iprules 工具
 clang -O2 -g \
