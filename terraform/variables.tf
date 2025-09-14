@@ -4,10 +4,28 @@ variable "vpc_name" {
   default     = "shiun-k8s-summit-vpc"
 }
 
-variable "instance_name" {
-  description = "Name tag for the EC2 instance"
+variable "master_instance_name" {
+  description = "Name tag for the master EC2 instance"
   type        = string
-  default     = "shiun-k8s-summit-instance"
+  default     = "shiun-k8s-summit-master"
+}
+
+variable "worker_instance_name" {
+  description = "Name tag for the worker EC2 instances"
+  type        = string
+  default     = "shiun-k8s-summit-worker"
+}
+
+variable "worker_count" {
+  description = "Number of worker instances"
+  type        = number
+  default     = 2
+}
+
+variable "volume_size" {
+  description = "EBS volume size for EC2 instances"
+  type        = number
+  default     = 30
 }
 
 variable "instance_type" {
@@ -20,6 +38,5 @@ variable "instance_type" {
 variable "ami_id" {
   description = "AMI ID for the EC2 instance"
   type        = string
-  default     = "ami-07b3f199a3bed006a" # Ubuntu Server 22.04 LTS (HVM),EBS General Purpose (SSD)
-
+  default     = "ami-0a71a0b9c988d5e5e" # Ubuntu Server 24.04 LTS (HVM),EBS General Purpose (SSD) Volume Type. Support available from Canonical (http://www.ubuntu.com/cloud/services).
 }
