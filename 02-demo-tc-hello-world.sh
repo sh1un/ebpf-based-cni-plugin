@@ -34,3 +34,6 @@ kubectl exec netshoot -- curl -s $(kubectl get pod nginx -o jsonpath='{.status.p
 
 # Clean up
 ./force_clean_up_k8s_ebpf.sh
+
+# 切換分支
+git checkout refactor/golang-identity-based
