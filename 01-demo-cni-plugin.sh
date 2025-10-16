@@ -2,7 +2,7 @@
 sudo mkdir -p /opt/cni/bin
 sudo mkdir -p /etc/cni/net.d
 
-# 複製 CNI 執行檔並賦予執行權限
+# 複製 CNI 執行檔
 sudo cp cni/ebpfcni /opt/cni/bin/
 
 # 複製 CNI 設定檔，複製過去後 Node 會變 Ready
