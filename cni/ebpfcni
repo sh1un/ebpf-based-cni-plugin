@@ -69,8 +69,8 @@ ADD)
     printf "${output_template}" $CNI_IFNAME $mac $CNI_NETNS $address $gw_ip
     
     #Attaching the eBPF program:
-    tc qdisc add dev $host_ifname clsact
-    tc filter add dev $host_ifname ingress bpf direct-action object-pinned /sys/fs/bpf/ebpfcni
+    #tc qdisc add dev $host_ifname clsact
+    #tc filter add dev $host_ifname ingress bpf direct-action object-pinned /sys/fs/bpf/ebpfcni
     
 ;;
 

@@ -1,3 +1,6 @@
+# 查看目前 ebpfcni 程式碼
+cat cni/ebpfcni
+
 # 確保 CNI 目錄存在
 sudo mkdir -p /opt/cni/bin
 sudo mkdir -p /etc/cni/net.d
