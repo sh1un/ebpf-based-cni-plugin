@@ -10,6 +10,7 @@ sudo cp cni/ebpfcni /opt/cni/bin/
 
 # 複製 CNI 設定檔，複製過去後 Node 會變 Ready
 sudo cp cni/10-ebpfcni.conf /etc/cni/net.d/
+kubectl get no -w
 
 # 建立一個簡單的 Pod 來測試 CNI
 kubectl run nginx --image=nginx
