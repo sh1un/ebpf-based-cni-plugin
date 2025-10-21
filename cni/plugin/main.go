@@ -278,12 +278,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 	logrus.Infof("Successfully attached eBPF program to ingress on iface %s", hostVeth.Attrs().Name)
 
-	cmd = exec.Command("tc", "filter", "replace", "dev", hostVeth.Attrs().Name, "egress", "bpf", "da", "pinned", progPinPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to attach program to egress: %v, output: %s", err, string(output))
-	}
-	logrus.Infof("Successfully attached eBPF program to egress on iface %s", hostVeth.Attrs().Name)
-
 	// --- 4. Create Cache ---
 	if err := os.MkdirAll(containerCacheDir, 0755); err != nil {
 		return fmt.Errorf("failed to create cache directory %s: %v", containerCacheDir, err)
