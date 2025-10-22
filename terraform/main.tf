@@ -68,7 +68,7 @@ resource "aws_security_group" "allow_all" {
 }
 
 resource "aws_iam_role" "ssm_ec2_role" {
-  name = "${var.instance_name}-role"
+  name = "${var.vpc_name}-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -86,21 +86,11 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 }
 
 resource "aws_iam_instance_profile" "ssm_profile" {
-  name = "${var.instance_name}-profile"
+  name = "${var.vpc_name}-profile"
   role = aws_iam_role.ssm_ec2_role.name
 }
 
-# data "aws_ami" "ubuntu" {
-#   most_recent = true
-#   owners      = ["099720109477"]
-
-#   filter {
-#     name   = "name"
-#     values = ["ubuntu/images/hvm-ssd/ubuntu-24.04-amd64-server-*"]
-#   }
-# }
-
-resource "aws_instance" "ubuntu" {
+resource "aws_instance" "master" {
   ami                         = var.ami_id
   instance_type               = var.instance_type
   subnet_id                   = aws_subnet.public.id
@@ -108,7 +98,29 @@ resource "aws_instance" "ubuntu" {
   associate_public_ip_address = true
   iam_instance_profile        = aws_iam_instance_profile.ssm_profile.name
 
+  root_block_device {
+    volume_size = var.volume_size
+  }
+
   tags = {
-    Name = var.instance_name
+    Name = var.master_instance_name
+  }
+}
+
+resource "aws_instance" "worker" {
+  count                       = var.worker_count
+  ami                         = var.ami_id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
+  vpc_security_group_ids      = [aws_security_group.allow_all.id]
+  associate_public_ip_address = true
+  iam_instance_profile        = aws_iam_instance_profile.ssm_profile.name
+
+  root_block_device {
+    volume_size = var.volume_size
+  }
+
+  tags = {
+    Name = "${var.worker_instance_name}-${count.index + 1}"
   }
 }

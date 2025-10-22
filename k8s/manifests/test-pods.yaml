@@ -32,6 +32,7 @@ metadata:
   labels:
     company: thecompany
     tier: internal
+    app: frontend
 spec:
   containers:
   - name: netshoot
@@ -42,11 +43,12 @@ spec:
 apiVersion: v1
 kind: Pod
 metadata:
-  name: someone
+  name: hacker
   labels:
-    app: someone
+    app: hacker
 spec:
   containers:
   - name: netshoot
     image: nicolaka/netshoot
     command: ["/bin/sh", "-c", "sleep 3600"]
+
