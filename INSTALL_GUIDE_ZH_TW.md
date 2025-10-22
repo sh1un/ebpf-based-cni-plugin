@@ -6,7 +6,7 @@
 
 ## 步驟 1：前置作業 - 安裝必要工具
 
-首先，登入您的 EC2 實例，安裝必要的工具
+首先，連線進去 EC2 Instance，安裝必要的工具
 
 > 遇到 debconf 提示時，請選擇 "OK" 繼續安裝
 
@@ -115,7 +115,7 @@ sudo cp cni/10-ebpfcni.conf /etc/cni/net.d/
 # 賦予 Controller 腳本執行權限
 chmod +x k8s/controller/network_policy_controller.sh
 
-# 在背景運行 Controller ，並將日誌輸出到檔案
+# 在背景運行 Controller ，並將 Logs 輸出到檔案
 # 使用 nohup 確保即使您登出，Controller 也能繼續運行
 sudo nohup ./k8s/controller/network_policy_controller.sh > /var/log/np-controller.log 2>&1 &
 ```
