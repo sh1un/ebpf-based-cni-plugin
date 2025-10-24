@@ -1,6 +1,10 @@
 # eBPF-based CNI Plugin (Identity-Based)
 
-This project is an eBPF-based CNI plugin for Kubernetes that enforces network policies based on identity, similar to Cilium's model. It has been refactored from a simple IP-based CNI to a more robust identity-based policy engine.
+This project is an eBPF-based CNI plugin for Kubernetes that enforces network policies based on identity, similar to Cilium's model.
+
+## 2025 KubeSummit
+
+👉 **2025 KubeSummit Session**: https://k8s.ithome.com.tw/2025/session-page/4083
 
 ## Project Overview
 
